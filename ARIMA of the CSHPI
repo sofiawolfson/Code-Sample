@@ -1,0 +1,275 @@
+---
+title: "Project"
+author: "Sofia Wolfson"
+date: "3/7/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(TSA)
+```
+## Introduction
+
+This data set includes information on the national price index of homes in the US. It contains a price index weekly, since before 1990. This will be interesting to analyze as the housing market can be seemingly unpredictable at times. If we also look at past market crashes, it could be possible to predict when another will occur. The data comes from FRED, and the index used is S&P/Case-Shiller (CSUSHPINSA). 
+
+Read in the data:
+```{r}
+data <- read.csv('CSUSHPINSA.csv')
+CSHP <- ts(as.numeric(data [ ,- c(1)]),start = c (1987,01) , frequency =12)
+```
+
+Plot the raw data:
+```{r}
+plot (CSHP, ylab =" Closing Price",xlab =" Day ",type ="o")
+```
+
+We can see that this is very sticky data, with an upward (positive) trend over time. There are no obvious outliers, except for the short rise and decline before and after the 2008 recession. Seasonality needs further investigation and the variance looks relatively constant and steady. 
+
+## Model Specification
+
+Create the BoxCox function:
+```{r}
+BoxCox.ar1=function (y, order, lambda = seq(-2, 2, 0.01), plotit = TRUE, 
+          method = c("mle", "yule-walker", "burg", "ols", "yw"), ...) 
+{
+  if (missing(method)) 
+    method = "mle"
+  y = as.vector(y/(max(abs(y)) + 1))
+  if (any(y <= 0)) 
+    stop("Data values must be positive")
+  order = ar(log(y), method = method)$order
+  nlngmy <- sum(log(y))
+  if (!missing(lambda)) 
+    xl <- lambda
+  else xl <- seq(-2, 2, 0.1)
+  loglik <- as.vector(xl)
+  for (i in 1:length(xl)) if (abs(xl[i]) > 0) {
+    if (missing(order)) 
+      ar.result = ar((y^xl[i] - 1)/xl[i], method = method)
+    else ar.result = ar((y^xl[i] - 1)/xl[i], method = method, 
+                        order.max = order)
+    n = length(y) - ar.result$order
+    ar.res = ar.result$resid
+    n = length(y)
+    loglik[i] <- -n/2 * log(ar.result$var.pred) + (xl[i] - 
+                                                     1) * nlngmy
+  }
+  else {
+    if (missing(order)) 
+      ar.result = ar(log(y), method = method)
+    else ar.result = ar(log(y), method = method, order.max = order)
+    n = length(y) - ar.result$order
+    ar.res = ar.result$resid
+    n = length(y)
+    loglik[i] <- -n/2 * log(ar.result$var.pred) - nlngmy
+  }
+  if (plotit) {
+    plot(xl, loglik, xlab = expression(lambda), ylab = "Log Likelihood", 
+         type = "l", ylim = c(min(loglik), max(loglik)))
+    lambdahat <- loglik[loglik == max(loglik)]
+    limit <- lambdahat - 0.5 * qchisq(0.95, 1)
+    in.interval = xl[loglik >= limit]
+    lower = in.interval[1]
+    upper = rev(in.interval)[1]
+    mle = (xl[loglik == max(loglik)])[1]
+    lines(x = c(lower, lower), y = c(min(loglik), limit), 
+          lty = 2)
+    lines(x = c(upper, upper), y = c(min(loglik), limit), 
+          lty = 2)
+    lines(x = c(mle, mle), y = c(min(loglik), max(loglik)), 
+          lty = 2)
+    abline(limit, 0, lty = 2)
+    scal <- (par("usr")[4] - par("usr")[3])/par("pin")[2]
+    text(c(xl[1]) + 0.1, limit + 0.08 * scal, " 95%")
+  }
+  invisible(list(lambda = xl, loglike = loglik, mle = mle, 
+                 ci = c(lower, upper)))
+}
+```
+
+```{r}
+library(FitAR)
+BoxCox.ts(CSHP)
+BoxCox.ar1(CSHP,method="burg")
+```
+
+The BoxCox transformation suggests a transformation with power -0.5. This is very uncommon so for this reason we decide against using it. 
+
+```{r}
+acf(CSHP)
+pacf(CSHP)
+eacf(CSHP)
+```
+
+Looks like this suggests an AR(1) Model. The pACF cuts off at lag 1 and the ACF decays extremely slowly. EACF is not very convincing of this though.There is clearly a trend element throughout the plot. The ACF plot shows that there are significant autocorrelations throughout, and it decays very slowly. Therefore the data should be differenced in order to remove autocorrelation.
+
+```{r}
+plot(diff(CSHP),ylab="Differenced CSHP",xlab="Time", type="o")
+```
+Here we address the non stationarity in our data through differencing. This is needed because our data was very sticky and there was an increasing mean over time. We can see that the stickyness has been moderated and so has the increasing upward trend. Now we check the ACF plot again to see if the data needs more differencing. 
+
+```{r}
+par(mfrow=c(1,2))
+acf(diff(CSHP))
+pacf(diff(CSHP))
+```
+
+The ACF is now decaying in a geometrical fashion, we moved to take first-order differencing of the data. Now we can move onto the next step of our model specification. The differenced data looks seasonal.
+
+```{r}
+par(mfrow=c(1,2))
+acf(diff(CSHP), lag=12)
+pacf(diff(CSHP), lag=12)
+eacf(diff(CSHP))
+```
+
+After we add the seasonal trend at lag 12 the data seems to decay better, with much larger cut offs in the pACF plot. The ACF and pACF plots suggest an ARIMA(2,1,0) with lag s = 12. The eACF plot suggests an ARIMA(1,1,3) or ARIMA(2,1,3).
+
+```{r}
+plot(diff(CSHP, lag = 12) ,ylab= "Difference CSHP with S=12" , type="o")
+```
+  Despite the data looking that it has seasonality at lag = 12 when we add the seasonality into our normal plot we see that the seasonality does not actually create a better fit of the data. So we opt for not using the s = 12. 
+
+## Model Fitting
+
+```{r}
+#Model fitting
+arima113 <- arima(CSHP,order=c(1,1,3))
+arima213 <- arima(CSHP,order=c(2,1,3)) # possible overfitting
+```
+
+```{r}
+par(mfrow=c(1,2))
+hist(rstandard(arima113),xlab="Standardised residuals",main="")
+qqnorm(rstandard(arima113),main="")
+qqline(rstandard(arima113))
+```
+  The standardized residuals depart from the mean in qq plot above suggesting non-normality. 
+```{r}
+#normality and independence
+shapiro.test(rstandard(arima113))
+```
+ We see that our residuals are not normal given the very small p - value. The Shapiro-Wilk test strongly rejects normality of the residuals. Our confidence intervals can be too optimistic. This is likely due to the 2010 outliers, which are not “expected” under the assumption of normality.
+
+```{r}
+runs(rstandard(arima113))
+```
+Here we fail to reject the null, and we can conclude that our residuals are independent. 
+
+```{r}
+tsdiag(arima113,gof=15,omit.initial=F)
+```
+  The Ljung-Box tests do not suggest lack of fit. The ARIMA(1,1,3) model appears to do a fairly good job. Now we compare the ARIMA(1,1,3) with the overfitting equivalent of ARIMA(2,1,3)
+
+Overfitting
+```{r}
+par(mfrow=c(1,2))
+hist(rstandard(arima213),xlab="Standardised residuals",main="")
+qqnorm(rstandard(arima213),main="")
+qqline(rstandard(arima213))
+```
+The standardized residuals depart from the mean in qq plot above suggesting non-normality. 
+```{r}
+#normality and independence
+shapiro.test(rstandard(arima213))
+```
+
+The ARIMA(2,1,3) also has very p-value, so we reject the null that the residuals are normally distributed.  The Shapiro-Wilks test strongly rejects normality of the residuals. Our confidence intervals can be too optimistic. This is likely due to the 2010 outliers, which are not “expected” under the assumption of normality.
+```{r}
+runs(rstandard(arima213))
+```
+Here we fail to reject the null, and conclude that our residuals are independent. 
+
+```{r}
+tsdiag(arima213,gof=15,omit.initial=F)
+```
+
+ Histograms: Both models have residuals that are normally distributed. 
+ QQ Plots: The ARIMA(1,1,3) model seems to be slightly more linearly distrubuted across the mean. 
+ Shapiro Test: ARIMA(1,1,3) (p-value = 2.2e-16) = ARIMA(2,1,3) (p-value = 2.2e-16)
+ Runs Test: ARIMA(1,1,3) (p-value = 0.567) > ARIMA(2,1,3) (p-value = 0.738)
+The AR1 model has a smaller p-value than the AR2 model. This can suggest that the residuals are more independent for the AR2 model. 
+  Ljung-Box Test: p-values look fairly similar for both. 
+Given that both of these models have fairly similar values for these tests we will be using AIC to determine the best fit. 
+```{r}
+arima113;arima213
+```
+The ARIMA(1,1,3) has a smaller AIC. This is in line with the principle of parsimony and therefore choosing the simpler model. We will use this to do our forecasting. All coefficients are significant, as when we divide by their standard error, all are much greater than 2.
+
+Also, when overfitting in the ARIMA(2,1,3) model, all coefficients no longer are significant. Dividing by their standard errors, they are all much lower than 2. 
+
+We will also be overfitting with ARIMA(1,1,4) and other seasonal models. Before moving onto forecasting we think that looking at the seasonal fit of the ARIMA(1,1,3) model may be interesting. 
+```{r}
+# more overfitting
+arima114 <- arima(CSHP,order=c(1,1,4)) #ma4 term is not significant.
+arima00212 <- arima(CSHP,order=c(1,1,3),method='ML',seasonal=list(order=c(0,0,2),period=12))
+arima00312 <- arima(CSHP,order=c(1,1,3),method='ML',seasonal=list(order=c(0,0,3),period=12))
+arima10212 <- arima(CSHP,order=c(1,1,3),method='ML',seasonal=list(order=c(1,0,2),period=12))
+
+arima114;arima00212;arima00312;arima10212
+```
+  The ARIMA(1,1,3) x ARIMA (1,0, 2) has a much smaller AIC. We will investigate to see if normality and independence are violated. 
+```{r}
+par(mfrow=c(1,2))
+hist(rstandard(arima10212),xlab="Standardised residuals",main="")
+qqnorm(rstandard(arima10212),main="")
+qqline(rstandard(arima10212))
+```
+```{r}
+#normality and independence
+shapiro.test(rstandard(arima10212))
+```
+
+```{r}
+runs(rstandard(arima10212))
+
+```
+```{r}
+tsdiag(arima10212,gof=15,omit.initial=F)
+```
+The results look much stronger for the multiplicative model. We will be using this to make our predictions. For example, the p-values for the Ljung-Box are predominantly non-significant for the multiplicative ARIMA model. 
+
+
+## Model Forecasting
+
+```{r}
+arima10212 <- arima(CSHP,order=c(1,1,3),method='ML',seasonal=list(order=c(1,0,2),period=12))
+
+arima10212predict <- predict(arima10212,n.ahead=36)
+round(arima10212predict$pred,3)
+round(arima10212predict$se,3)
+```
+
+```{r}
+# prediction intervals
+lower.pi<-arima10212predict$pred-qnorm(0.975,0,1)*arima10212predict$se
+upper.pi<-arima10212predict$pred+qnorm(0.975,0,1)*arima10212predict$se
+Month=c(421:456)
+data.frame(Month,lower.pi,upper.pi)
+```
+
+```{r}
+plot(arima10212,n.ahead=36,col='red',type='b',pch=16,n1=2015,ylab="Prediction", xlab="Year")
+lines(y=lower.pi,x=Month,lwd=2,col="red",lty="dashed")
+lines(y=upper.pi,x=Month,lwd=2,col="red",lty="dashed")
+```
+
+Our predictions continue the upward linear trend in the data. This suggests that the Case Shiller House Pricing Index will continue to go up at a decreasing rate for the next 36 years. The variance does fan out over time, as the process is nonstationary.
+
+
+## Discussion:
+
+Our final model was: $ARIMA(1, 1, 3)\times ARIMA(1, 0, 2)_{12}$. After comparing this model to others and overfitting, we found that this was the most significant. After running diagnostics and tests such as Shapiro Wilks, runs test, Ljung Box test to make sure the model fits assumptions (normality, independence), this model has the most significant coefficients as compared to other models, and takes into account seasonality. We were able to forecast price index 36 months, or 3 years, ahead and were able to graph this visually, going into 2025. With such an unpredictable housing market, this is a very powerful and useful tool to be able to predict. As we saw in 2008, it is impossible to predict what will actually happen, but using this model that includes seasonal trends, it gives us more comfort in predicting housing price indices. 
+
+As pricing is ever changing, there will definitely be opportunities to revise and update the model, especially as we see new trends emerge. With time, we will be able to predict and create more accurate models for this data. 
+
+
+
+
+
+
+
+
